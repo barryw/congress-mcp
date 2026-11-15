@@ -51,7 +51,7 @@ def _api_error(resp: httpx.Response) -> ToolError:
     except ValueError:
         msg = resp.text[:300]
     if resp.status_code == 429:
-        msg = f"rate limited (5,000 requests/hour). {msg}"
+        msg = f"rate limited (hourly per-key quota). {msg}"
     return ToolError(f"Congress.gov API {resp.status_code}: {msg}")
 
 

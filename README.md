@@ -30,7 +30,7 @@ uv run pytest -q
 CONGRESS_API_KEY=DEMO_KEY MCP_BEARER_TOKEN=$(openssl rand -hex 32) uv run python server.py   # :8080
 ```
 
-`DEMO_KEY` is limited to about 10 requests an hour. A real key ([sign up](https://api.congress.gov/sign-up/)) allows 5,000.
+`DEMO_KEY` is limited to about 10 requests an hour. A real key ([sign up](https://api.congress.gov/sign-up/)) allows thousands an hour (check the `x-ratelimit-limit` response header).
 
 ## Deploy
 
