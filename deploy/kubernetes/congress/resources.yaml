@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: congress
+  labels:
+    app.kubernetes.io/name: congress-mcp
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: congress-mcp
+  namespace: congress
+  labels:
+    app.kubernetes.io/name: congress-mcp
+  annotations:
+    secret.reloader.stakater.com/reload: congress-mcp
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: congress-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: congress-mcp
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: congress-mcp
+          image: ghcr.io/barryw/congress-mcp:latest
+          # CONGRESS_API_KEY + MCP_BEARER_TOKEN
+          envFrom:
+            - secretRef:
+                name: congress-mcp
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: congress-mcp
+  namespace: congress
+  labels:
+    app.kubernetes.io/name: congress-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: congress-mcp
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: congress-mcp
+  namespace: congress
+  labels:
+    app.kubernetes.io/name: congress-mcp
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: congress.barrywalker.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: congress-mcp
+                port:
+                  name: http

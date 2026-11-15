@@ -1,0 +1,81 @@
+# Woodpecker CI/CD for congress-mcp.
+#
+# PR/manual: lint, test, image build dry run.
+# main push: lint, test, GHCR publish, GitOps image bump in barryw/infrastructure.
+#
+# Required Woodpecker secrets:
+#   ghcr_token   - token with package write access for ghcr.io/barryw/congress-mcp (repo secret)
+#   github_token - token with contents write access to barryw/infrastructure (org secret)
+
+labels:
+  platform: linux/amd64
+
+when:
+  - event: [push, pull_request, manual]
+
+steps:
+  check:
+    image: ghcr.io/astral-sh/uv:0.9.21-python3.13-bookworm-slim
+    commands:
+      - uv sync --frozen
+      - uv run ruff check .
+      - uv run ruff format --check .
+      - uv run pytest -q
+
+  image-dry-run:
+    image: gcr.io/kaniko-project/executor:debug
+    when:
+      - event: [pull_request, manual]
+    commands:
+      - /kaniko/executor --dockerfile=Dockerfile --context=. --no-push
+    depends_on: [check]
+
+  image-publish:
+    image: woodpeckerci/plugin-kaniko@sha256:b88802ba66af95ee28a8ffde08715631ec2892e024b2c74e90e19f73a5c2c602
+    when:
+      - event: push
+        branch: main
+    settings:
+      repo: barryw/congress-mcp
+      dockerfile: Dockerfile
+      registry: ghcr.io
+      username: barryw
+      password:
+        from_secret: ghcr_token
+      tags:
+        - "sha-${CI_COMMIT_SHA:0:12}"
+        - latest
+    depends_on: [check]
+
+  gitops-image-bump:
+    image: alpine:3.21
+    when:
+      - event: push
+        branch: main
+    environment:
+      GH_TOKEN:
+        from_secret: github_token
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - apk add --no-cache git github-cli
+      - SHORT_SHA=$(printf "%.12s" "$CI_COMMIT_SHA")
+      - IMAGE_TAG="sha-$SHORT_SHA"
+      - BRANCH="ci/congress-mcp-$IMAGE_TAG"
+      - APP_MANIFEST="$PWD/deploy/kubernetes/congress/resources.yaml"
+      - test -f "$APP_MANIFEST"
+      - git clone "https://x-access-token:$GITHUB_TOKEN@github.com/barryw/infrastructure.git" /tmp/infrastructure
+      - cd /tmp/infrastructure
+      - git config user.email "ci@woodpecker.local"
+      - git config user.name "Woodpecker CI"
+      - git checkout -b "$BRANCH"
+      - test -d kubernetes/congress
+      - cp "$APP_MANIFEST" kubernetes/congress/resources.yaml
+      - sed -i "s#ghcr.io/barryw/congress-mcp:[^[:space:]]*#ghcr.io/barryw/congress-mcp:$IMAGE_TAG#g" kubernetes/congress/resources.yaml
+      - git diff --quiet && { echo "GitOps manifest already references $IMAGE_TAG"; exit 0; }
+      - git add kubernetes/congress/resources.yaml
+      - 'git commit -m "deploy: congress-mcp $IMAGE_TAG"'
+      - git push --force-with-lease origin "$BRANCH"
+      - 'PR_URL=$(gh pr create --repo barryw/infrastructure --base main --head "$BRANCH" --title "deploy: congress-mcp $IMAGE_TAG" --body "Updates congress-mcp to ghcr.io/barryw/congress-mcp:$IMAGE_TAG.")'
+      - gh pr merge "$PR_URL" --repo barryw/infrastructure --squash --delete-branch --admin
+    depends_on: [image-publish]
