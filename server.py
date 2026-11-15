@@ -211,6 +211,7 @@ async def congress_api(path: str, params: dict[str, str | int | bool] | None = N
 
 
 _TEXT_HOSTS = {"www.congress.gov", "congress.gov"}
+MAX_TEXT_BYTES = 25_000_000  # largest omnibus bills are ~10 MB of HTML; pod limit is 256Mi
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -234,10 +235,16 @@ async def read_bill_text(url: str, offset: int = 0, max_chars: int = 40_000) -> 
     max_chars = max(1, min(max_chars, 100_000))
 
     # ponytail: refetches the whole document per chunk; add a small LRU if paging gets slow
-    resp = await client().get(url, follow_redirects=True)  # no API key: this is www.congress.gov
-    if resp.status_code != 200:
-        raise ToolError(f"congress.gov returned {resp.status_code} for {url}")
-    text = html_to_text(resp.text)
+    # No redirects (a hop could leave congress.gov), no API key, and a size cap.
+    async with client().stream("GET", url) as resp:
+        if resp.status_code != 200:
+            raise ToolError(f"congress.gov returned {resp.status_code} for {url}")
+        body = bytearray()
+        async for chunk in resp.aiter_bytes():
+            body += chunk
+            if len(body) > MAX_TEXT_BYTES:
+                raise ToolError(f"bill text exceeds {MAX_TEXT_BYTES // 1_000_000} MB")
+        text = html_to_text(body.decode(resp.encoding or "utf-8", errors="replace"))
     end = min(offset + max_chars, len(text))
     return compact(
         {

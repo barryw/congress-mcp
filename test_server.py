@@ -108,3 +108,36 @@ def test_http_auth_and_wiring():
         names = {t["name"] for t in r.json()["result"]["tools"]}
         assert names == {"find_members", "congress_api", "read_bill_text"}
         assert json.dumps(r.json()).count("readOnlyHint") == 3
+
+
+def _fake_client(handler):
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_read_bill_text_refuses_redirect_and_pages(monkeypatch):
+    import httpx
+
+    def redirect(_):
+        return httpx.Response(302, headers={"Location": "http://10.0.0.1/internal"})
+
+    monkeypatch.setattr(server, "_client", _fake_client(redirect))
+    with pytest.raises(ToolError, match="302"):
+        asyncio.run(server.read_bill_text("https://www.congress.gov/a.htm"))
+
+    def page(_):
+        return httpx.Response(200, text="<html><body><pre>abcdefghij</pre></body></html>")
+
+    monkeypatch.setattr(server, "_client", _fake_client(page))
+    out = json.loads(asyncio.run(server.read_bill_text("https://www.congress.gov/a.htm", offset=4, max_chars=4)))
+    assert out == {"total_chars": 10, "offset": 4, "next_offset": 8, "text": "efgh"}
+
+
+def test_read_bill_text_size_cap(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(server, "MAX_TEXT_BYTES", 100)
+    monkeypatch.setattr(server, "_client", _fake_client(lambda _: httpx.Response(200, content=b"x" * 500)))
+    with pytest.raises(ToolError, match="exceeds"):
+        asyncio.run(server.read_bill_text("https://www.congress.gov/a.htm"))
